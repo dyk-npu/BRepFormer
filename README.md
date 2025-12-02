@@ -1,4 +1,4 @@
-# BRepFormer: Transformer-Based B-rep Geometric Feature Recognition
+# [BRepFormer: Transformer-Based B-rep Geometric Feature Recognition](https://dl.acm.org/doi/abs/10.1145/3731715.3733283)
 
 Recognizing geometric features on B-rep models is a cornerstone technique for multimedia content-based retrieval and has been widely applied in intelligent manufacturing. However, previous research often merely focused on Machining Feature Recognition (MFR), falling short in effectively capturing the intricate topological and geometric characteristics of complex geometry features.  
 
