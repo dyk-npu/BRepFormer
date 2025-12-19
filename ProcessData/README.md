@@ -1,6 +1,6 @@
 # Processing your own data
 
-We provide scripts to process your own STEP file data into the DGL bin format that UV-Net consumes, point clouds in NPZ format and render meshes (non-watertight meshes) in STL format.
+We provide scripts to process your own STEP file data into the DGL bin format
 
 Example usage:
 
