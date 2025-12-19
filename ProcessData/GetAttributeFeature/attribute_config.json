@@ -1,0 +1,38 @@
+{
+  "face_attributes": [
+    "Plane",
+    "Cylinder",
+    "Cone",
+    "Sphere",
+    "Torus",
+    "Revolution",
+    "Extrusion",
+    "Offset",
+    "Other",
+    "FaceAreaAttribute",
+    "RationalNurbsFaceAttribute",
+    "FaceCentroidAttribute"
+  ],
+  "edge_attributes": [
+    "Concave edge",
+    "Convex edge",
+    "Smooth",
+    "EdgeLengthAttribute",
+    "CircularEdgeAttribute",
+    "ClosedEdgeAttribute",
+    "EllipticalEdgeAttribute",
+    "StraightEdgeAttribute",
+    "HyperbolicEdgeAttribute",
+    "ParabolicEdgeAttribute",
+    "BezierEdgeAttribute",
+    "NonRationalBSplineEdgeAttribute",
+    "RationalBSplineEdgeAttribute",
+    "OffsetEdgeAttribute",
+    "Other"
+  ],
+  "UV-grid": {
+    "num_srf_u": 10,
+    "num_srf_v": 10,
+    "num_crv_u": 10
+  }
+}
