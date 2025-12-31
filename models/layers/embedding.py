@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .blocks import MLP, EdgeConv
 
-# --- CNN Helpers ---
+# --- CNN Helpers (原 feature_encoders.txt) ---
 def _conv1d(in_channels, out_channels, kernel_size=3, padding=0, bias=False):
     return nn.Sequential(
         nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=bias),
@@ -79,7 +79,7 @@ class SurfaceEncoder(nn.Module):
         x = self.fc(x)
         return x
 
-# --- Node & Bias Encoders ---
+# --- Node & Bias Encoders (原 brep_encoder.txt / brep_encoder_layer.txt) ---
 
 class NonLinear(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -128,12 +128,7 @@ class GraphNodeFeature(nn.Module):
         x = x.permute(0, 3, 1, 2)
 
         x_ = self.surf_encoder(x)
-        
-        # [修改] 数值保护：先 clamp 到最小正数，再做 log
-        face_area_clamped = torch.clamp(face_area, min=1e-6)
-        face_area_safe = torch.log(face_area_clamped.unsqueeze(dim=1)) 
-        face_area_ = self.face_area_encoder(face_area_safe)
-
+        face_area_ = self.face_area_encoder(face_area.unsqueeze(dim=1))
         face_type_ = self.face_type_encoder(face_type)
         face_centroid_ = self.face_centroid_encoder(face_centroid)
         face_rational_ = self.face_rational_encoder(face_rational)
@@ -151,12 +146,10 @@ class GraphAttnBias(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.multi_hop_max_dist = multi_hop_max_dist
-
         self.shortest_distance_encoder = nn.Embedding(num_distance, num_heads, padding_idx=0)
         self.graph_token_virtual_distance = nn.Embedding(1, num_heads)
         self.angle_encoder = NonLinear(1, num_heads)
         self.centroid_distance_encoder = NonLinear(1, num_heads)
-
         self.curv_encoder = CurveEncoder(in_channels=12, output_dims=num_heads)
         self.edge_type_encoder = NonLinear(11, num_heads)
         self.edge_length_encoder = NonLinear(1, num_heads)
@@ -174,27 +167,22 @@ class GraphAttnBias(nn.Module):
         graph_attn_bias = attn_bias.clone()
         graph_attn_bias = graph_attn_bias.unsqueeze(1).repeat(1, self.num_heads, 1, 1)
 
-        # 1. Shortest Distance
         shortest_distance_bias = self.shortest_distance_encoder(shortest_distance)
         shortest_distance_bias = shortest_distance_bias.permute(0, 3, 1, 2)
         graph_attn_bias[:, :, 1:, 1:] = graph_attn_bias[:, :, 1:, 1:] + shortest_distance_bias
 
-        # 2. Virtual Token Distance
         t = self.graph_token_virtual_distance.weight.view(1, self.num_heads, 1)
         graph_attn_bias[:, :, 1:, 0] = graph_attn_bias[:, :, 1:, 0] + t
         graph_attn_bias[:, :, 0, :] = graph_attn_bias[:, :, 0, :] + t
 
-        # 3. Angle
         angle = angle.reshape(-1, 1)
         angle_bias = self.angle_encoder(angle).reshape(n_graph, n_node, n_node, self.num_heads).permute(0, 3, 1, 2)
         graph_attn_bias[:, :, 1:, 1:] = graph_attn_bias[:, :, 1:, 1:] + angle_bias
 
-        # 4. Centroid Distance
         centroid_distance = centroid_distance.reshape(-1, 1)
         centroid_distance = self.centroid_distance_encoder(centroid_distance).reshape(n_graph, n_node, n_node, self.num_heads).permute(0, 3, 1, 2)
         graph_attn_bias[:, :, 1:, 1:] = graph_attn_bias[:, :, 1:, 1:] + centroid_distance
 
-        # 5. Edge Features (Multi-hop)
         if self.edge_type == "multi_hop":
             shortest_distance_ = shortest_distance.clone()
             shortest_distance_[shortest_distance_ == 0] = 1
@@ -229,16 +217,7 @@ class GraphAttnBias(nn.Module):
                 self.edge_dis_encoder.weight.reshape(-1, self.num_heads, self.num_heads)[:max_dist, :, :]
             )
             edge_bias = edge_bias.reshape(max_dist, n_graph, n_node, n_node, self.num_heads).permute(1, 2, 3, 0, 4)
-            
-            # [Fix] 核心修复：防止除以0，以及防止 edge_bias 爆炸
-            denom = shortest_distance_.float().unsqueeze(-1) + 1e-6
-            edge_bias_sum = edge_bias.sum(-2)
-            edge_bias = edge_bias_sum / denom
-            
-            # 最后的防线
-            if torch.isnan(edge_bias).any():
-                edge_bias = torch.nan_to_num(edge_bias, nan=0.0)
-
+            edge_bias = (edge_bias.sum(-2) / (shortest_distance_.float().unsqueeze(-1)))
             edge_bias = edge_bias.permute(0, 3, 1, 2)
             graph_attn_bias[:, :, 1:, 1:] = graph_attn_bias[:, :, 1:, 1:] + edge_bias
 

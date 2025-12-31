@@ -44,13 +44,13 @@ class MultiheadAttention(nn.Module):
         num_kv_heads=None,
         dropout=0.0,
         bias=True,
-        self_attention=False,
-        q_noise=0.0,
-        qn_block_size=8,
+        self_attention=False, # 保留参数签名但不影响逻辑
+        q_noise=0.0,          # 保留参数签名
+        qn_block_size=8,      # 保留参数签名
     ):
         super().__init__()
         self.embed_dim = embed_dim
-        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else 8
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else 8 # 原代码默认为8
         self.num_local_heads = num_heads
         self.num_local_kv_heads = self.num_kv_heads
         self.num_rep = self.num_local_heads // self.num_local_kv_heads
@@ -83,6 +83,8 @@ class MultiheadAttention(nn.Module):
         if freqs_cis is not None:
             xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
+        # 简化原代码的 Cache 逻辑，原训练中 Cache 并不起作用，但为了保持计算图一致性
+        # 原代码在这里创建了 cache_k, cache_v 但没有真正用于推理缓存，而是直接使用 current xk, xv
         keys = xk
         values = xv
 
@@ -93,11 +95,7 @@ class MultiheadAttention(nn.Module):
         keys = keys.transpose(1, 2)
         values = values.transpose(1, 2)
 
-        # QK^T / sqrt(d)
         scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-        # [Fix] 强制 Clamp，防止 Transformer 早期训练不稳定导致 Score 爆炸
-        scores = torch.clamp(scores, min=-50000, max=50000)
 
         if attn_bias is not None:
             scores += attn_bias
@@ -108,7 +106,6 @@ class MultiheadAttention(nn.Module):
         if key_padding_mask is not None:
             scores = scores.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
 
-        # [Fix] 强制使用 float32 做 softmax，避免 fp16 下的溢出
         attn_weights = F.softmax(scores.float(), dim=-1).type_as(xq)
         attn_weights = self.dropout(attn_weights)
 

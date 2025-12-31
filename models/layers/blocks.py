@@ -17,6 +17,7 @@ class RMSNorm(nn.Module):
         return output * self.weight
 
 class SwiGLU(nn.Module):
+    """对应原代码中的 FeedForward，保留了特殊的 hidden_dim 计算逻辑"""
     def __init__(
         self,
         dim: int,
@@ -38,9 +39,7 @@ class SwiGLU(nn.Module):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 class MLP(nn.Module):
-    """
-    [修改] 将 BatchNorm1d 替换为 LayerNorm，防止 Batch=1 或 Edge=1 时 NaN
-    """
+    """对应原代码中的 _MLP"""
     def __init__(self, num_layers, input_dim, hidden_dim, output_dim):
         super().__init__()
         self.linear_or_not = True
@@ -54,7 +53,7 @@ class MLP(nn.Module):
         else:
             self.linear_or_not = False
             self.linears = torch.nn.ModuleList()
-            self.norms = torch.nn.ModuleList() # 改名 batch_norms -> norms
+            self.batch_norms = torch.nn.ModuleList()
 
             self.linears.append(nn.Linear(input_dim, hidden_dim))
             for layer in range(num_layers - 2):
@@ -62,8 +61,7 @@ class MLP(nn.Module):
             self.linears.append(nn.Linear(hidden_dim, output_dim))
 
             for layer in range(num_layers - 1):
-                # 使用 LayerNorm 替代 BatchNorm1d
-                self.norms.append(nn.LayerNorm(hidden_dim))
+                self.batch_norms.append(nn.BatchNorm1d((hidden_dim)))
 
     def forward(self, x):
         if self.linear_or_not:
@@ -71,58 +69,42 @@ class MLP(nn.Module):
         else:
             h = x
             for i in range(self.num_layers - 1):
-                # LayerNorm 位置
-                h = F.relu(self.norms[i](self.linears[i](h)))
+                h = F.relu(self.batch_norms[i](self.linears[i](h)))
             return self.linears[-1](h)
 
 class EdgeConv(nn.Module):
-    """
-    [修改] 内部 batchnorm 改为 LayerNorm
-    """
+    """对应原代码中的 _EdgeConv"""
     def __init__(self, edge_feats, out_feats, node_feats, num_mlp_layers=2, hidden_mlp_dim=64):
         super().__init__()
         self.proj = MLP(1, node_feats, hidden_mlp_dim, edge_feats)
         self.mlp = MLP(num_mlp_layers, edge_feats, hidden_mlp_dim, out_feats)
-        
-        # 修改为 LayerNorm
-        self.norm = nn.LayerNorm(out_feats)
+        self.batchnorm = nn.BatchNorm1d(out_feats)
         self.eps = torch.nn.Parameter(torch.FloatTensor([0.0]))
 
     def forward(self, graph, nfeat, efeat):
         src, dst = graph.edges()
         src = src.to(torch.long)
         dst = dst.to(torch.long)
-        
-        # 增加保护：如果图没有边，直接返回零张量 (防止 MLP 报错)
-        if src.numel() == 0:
-            return torch.zeros((0, self.norm.normalized_shape[0]), device=nfeat.device, dtype=nfeat.dtype)
 
         proj1, proj2 = self.proj(nfeat[src]), self.proj(nfeat[dst])
         agg = proj1 + proj2
         h = self.mlp((1 + self.eps) * efeat + agg)
-        
-        # 使用 LayerNorm
-        h = F.leaky_relu(self.norm(h), inplace=True)
+        h = F.leaky_relu(self.batchnorm(h), inplace=True)
         return h
 
 class NonLinearClassifier(nn.Module):
-    """
-    [修改] BatchNorm1d -> LayerNorm
-    """
+    """对应原 BrepSeg 中的 NonLinearClassifier"""
     def __init__(self, input_dim, num_classes, dropout=0.3):
         super().__init__()
         self.linear1 = nn.Linear(input_dim, 512, bias=False)
-        self.ln1 = nn.LayerNorm(512) # BN -> LN
+        self.bn1 = nn.BatchNorm1d(512)
         self.dp1 = nn.Dropout(p=dropout)
-        
         self.linear2 = nn.Linear(512, 512, bias=False)
-        self.ln2 = nn.LayerNorm(512) # BN -> LN
+        self.bn2 = nn.BatchNorm1d(512)
         self.dp2 = nn.Dropout(p=dropout)
-        
         self.linear3 = nn.Linear(512, 256, bias=False)
-        self.ln3 = nn.LayerNorm(256) # BN -> LN
+        self.bn3 = nn.BatchNorm1d(256)
         self.dp3 = nn.Dropout(p=dropout)
-        
         self.linear4 = nn.Linear(256, num_classes)
         
         self.apply(self.weights_init)
@@ -134,19 +116,21 @@ class NonLinearClassifier(nn.Module):
                 m.bias.data.fill_(0.0)
 
     def forward(self, inp):
-        x = F.relu(self.ln1(self.linear1(inp)))
+        x = F.relu(self.bn1(self.linear1(inp)))
         x = self.dp1(x)
-        x = F.relu(self.ln2(self.linear2(x)))
+        x = F.relu(self.bn2(self.linear2(x)))
         x = self.dp2(x)
-        x = F.relu(self.ln3(self.linear3(x)))
+        x = F.relu(self.bn3(self.linear3(x)))
         x = self.dp3(x)
         x = self.linear4(x)
-        # 确保没有 Softmax
+        x = F.softmax(x, dim=-1)
         return x
 
 def init_params_global(module):
+    """对应原 brep_encoder.txt 中的全局 init_params"""
     def normal_(data):
         data.copy_(data.cpu().normal_(mean=0.0, std=0.02).to(data.device))
+
     if isinstance(module, nn.Linear):
         normal_(module.weight.data)
         if module.bias is not None:
@@ -155,3 +139,4 @@ def init_params_global(module):
         normal_(module.weight.data)
         if module.padding_idx is not None:
             module.weight.data[module.padding_idx].zero_()
+    # MultiheadAttention 处理在外部类中

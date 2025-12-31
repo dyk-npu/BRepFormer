@@ -32,7 +32,7 @@ class CADRecognition(Dataset):
                 self.file_paths.append(x)
         print(f"Done loading {len(self.file_paths)} files")
 
-    def load_one_graph(self, file_path, idx=0): # <--- 修改 1: 增加 idx 参数，默认值为 0
+    def load_one_graph(self, file_path):
         graphfile = load_graphs(str(file_path))
         graph = graphfile[0][0]
         pyg_graph = PYGGraph()
@@ -64,14 +64,8 @@ class CADRecognition(Dataset):
         pyg_graph.shortest_distance = graphfile[1]["shortest_distance_matrix"].to(torch.int32)
         pyg_graph.edge_path = graphfile[1]["edge_path_matrix"].to(torch.int32)
 
-        # --- 修改 2: 删除原来的文件名解析逻辑，直接使用传入的 idx ---
-        # 原代码（删除或注释掉）：
-        # basename = os.path.basename(file_path).replace(os.path.splitext(file_path)[1], "")
-        # pyg_graph.data_id = int([s for s in basename.split("_") if s.isdigit()][-1])
-        
-        # 新代码：
-        pyg_graph.data_id = int(idx) 
-        # --------------------------------------------------------
+        basename = os.path.basename(file_path).replace(os.path.splitext(file_path)[1], "")
+        pyg_graph.data_id = int([s for s in basename.split("_") if s.isdigit()][-1])
 
         return pyg_graph
 
@@ -79,10 +73,7 @@ class CADRecognition(Dataset):
         return len(self.file_paths)
 
     def __getitem__(self, idx):
-        # --- 修改 3: 调用 load_one_graph 时传入 idx ---
-        fn = self.file_paths[idx]
-        sample = self.load_one_graph(fn, idx) # 这里传入 idx
-        return sample
+        return self.load_one_graph(self.file_paths[idx])
 
     def _collate(self, batch):
         return collator(batch, multi_hop_max_dist=16, spatial_pos_max=32)

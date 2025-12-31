@@ -10,87 +10,77 @@ from .layers.blocks import NonLinearClassifier
 from .losses import WeightedCrossEntropyLoss
 
 # ------------------------------------------------------------------------------
-# Attention 模块 (保持不变)
-# 作用：融合 [Node, Graph] 两个特征
+# 简单的注意力融合模块
+# 作用：将两个特征向量（例如节点特征和图全局特征）通过注意力机制加权融合
 # ------------------------------------------------------------------------------
 class Attention(nn.Module):
     def __init__(self, in_channels):
+        """
+        初始化注意力模块
+        Args:
+            in_channels (int): 输入特征的维度 (dim_node)
+        """
         super().__init__()
+        # 用于计算注意力权重的线性层，将特征映射到 1 个标量权重
         self.dense_weight = nn.Linear(in_channels, 1)
         self.dropout = nn.Dropout(0.1)
 
     def forward(self, inputs):
-        # inputs: [node_z, graph_z]
-        # node_z shape: [Total_Valid_Nodes, Dim]
-        stacked = torch.stack(inputs, dim=1) # [N, 2, Dim]
-        weights = self.dense_weight(stacked) # [N, 2, 1]
+        """
+        前向传播
+        Args:
+            inputs (list of Tensor): 一个包含两个张量的列表 [node_z, graph_z]
+                                     其中每个张量的形状都是 [Total_Nodes, C]
+        
+        Returns:
+            outputs (Tensor): 融合后的特征，形状为 [Total_Nodes, C]
+        """
+        # 1. 堆叠输入
+        # 形状变化: list([N, C], [N, C]) -> [N, 2, C]
+        stacked = torch.stack(inputs, dim=1)
+        
+        # 2. 计算注意力分数
+        # [N, 2, C] -> [N, 2, 1]
+        weights = self.dense_weight(stacked)
+        
+        # 3. 归一化权重 (在 dim=1，即那两个特征之间做 Softmax)
+        # [N, 2, 1]
         weights = F.softmax(weights, dim=1)
-        outputs = torch.sum(stacked * weights, dim=1) # [N, Dim]
+        
+        # 4. 加权求和
+        # [N, 2, C] * [N, 2, 1] -> [N, 2, C] -> Sum(dim=1) -> [N, C]
+        outputs = torch.sum(stacked * weights, dim=1)
+        
         return outputs
 
 
 # ------------------------------------------------------------------------------
-# [新增] 图分类头
-# 作用：接收 Attention 后的节点特征 z，进行池化 (Pooling)，然后分类
-# ------------------------------------------------------------------------------
-class GraphPoolingClassifier(nn.Module):
-    def __init__(self, input_dim, num_classes, dropout=0.3):
-        """
-        Args:
-            input_dim: 输入特征维度 (dim_node)
-            num_classes: 类别数 (例如 52)
-        """
-        super().__init__()
-        # 这里复用 NonLinearClassifier 的结构，或者你可以写一个简单的 Linear
-        self.mlp = NonLinearClassifier(input_dim, num_classes, dropout)
-
-    def forward(self, z, batch_num_nodes):
-        """
-        Args:
-            z (Tensor): Attention 融合后的特征 [Total_Valid_Nodes, Dim]
-            batch_num_nodes (Tensor): 每个图包含的节点数量列表 [Batch_Size]
-                                      例如 [10, 12, 8...] 表示第1张图10个节点，第2张12个...
-        Returns:
-            logits (Tensor): [Batch_Size, Num_Classes]
-        """
-        # 1. 将打平的 z 按照图的归属切分
-        # split_z 是一个 tuple，包含 Batch_Size 个 tensor
-        z_per_graph = torch.split(z, batch_num_nodes.tolist())
-
-        # 2. Readout / Pooling (这里使用 Mean Pooling)
-        # 对每个图的节点特征求平均，得到图级特征
-        # [Node_i, Dim] -> [Dim]
-        graph_feats = torch.stack([t.mean(dim=0) for t in z_per_graph]) # [Batch_Size, Dim]
-
-        # 3. 分类
-        logits = self.mlp(graph_feats) # [Batch_Size, Num_Classes]
-        return logits
-
-
-# ------------------------------------------------------------------------------
-# BrepFormer 主模型
+# BrepFormer 主模型 (LightningModule)
+# 作用：处理 B-rep 数据，进行节点级分类（例如面的语义分割）
 # ------------------------------------------------------------------------------
 class BrepFormer(pl.LightningModule):
     def __init__(self, args):
+        """
+        初始化模型结构
+        Args:
+            args: 包含所有超参数的命名空间对象 (d_model, n_heads, dropout 等)
+        """
         super().__init__()
         self.save_hyperparameters()
-        self.args = args
-        
-        # 获取任务类型：'segmentation' (默认) 或 'classification'
-        self.task_type = getattr(args, 'task_type', 'segmentation')
         self.num_classes = args.num_classes
         self.batch_size = args.batch_size
+        self.args = args
 
-        # --- 1. 通用编码器 ---
+        # --- 核心编码器 (Graph Transformer) ---
         self.brep_encoder = BrepEncoder(
             num_degree=128,
-            num_distance=64,
-            num_edge_dis=64,
+            num_distance=64,  # embedding table size for distance
+            num_edge_dis=64,  # embedding table size for edge distance
             edge_type="multi_hop",
             multi_hop_max_dist=16,
             num_encoder_layers=args.n_layers_encode,
-            embedding_dim=args.dim_node,
-            ffn_embedding_dim=args.d_model,
+            embedding_dim=args.dim_node,         # 节点特征维度 (C)
+            ffn_embedding_dim=args.d_model,      # FFN 内部维度
             num_attention_heads=args.n_heads,
             dropout=args.dropout,
             attention_dropout=args.attention_dropout,
@@ -102,202 +92,278 @@ class BrepFormer(pl.LightningModule):
             activation_fn="gelu",
         )
 
-        # --- 2. 通用 Attention 融合层 ---
+        # --- 特征融合模块 ---
+        # 用于融合 局部节点特征 和 全局图特征
         self.attention = Attention(args.dim_node)
 
-        # --- 3. 根据任务类型初始化不同的分类头 ---
-        if self.task_type == 'segmentation':
-            # 分割：对每个节点分类
-            self.classifier = NonLinearClassifier(args.dim_node, args.num_classes, args.dropout)
-        
-        elif self.task_type == 'classification':
-            # 分类：先 Pooling 再分类
-            self.classifier = GraphPoolingClassifier(args.dim_node, args.num_classes, args.dropout)
-            # 分类任务的标准 Loss
-            self.cls_loss_fn = nn.CrossEntropyLoss()
+        # --- 分类头 (MLP) ---
+        # 输入维度: dim_node, 输出维度: num_classes
+        self.classifier = NonLinearClassifier(args.dim_node, args.num_classes, args.dropout)
 
-        # 记录指标用
+        # 用于存储验证/测试阶段的预测结果
         self.pred = []
         self.label = []
 
     def forward(self, batch):
         """
+        模型前向传播核心逻辑
+        Args:
+            batch (dict): 数据字典，包含 'node_data', 'padding_mask', 'graph' 等
+
         Returns:
-            logits: 
-                - Segmentation: [Total_Valid_Nodes, Num_Classes]
-                - Classification: [Batch_Size, Num_Classes]
+            node_seg (Tensor): 每个有效节点的分类概率分布
+                               Shape: [Total_Valid_Nodes, num_classes]
         """
-        # 1. Encoder 提取特征
+        # 1. 通过 Encoder 提取特征
+        # node_emb (原始): [Sequence_Len, Batch_Size, Dim] (Fairseq 风格输出)
+        # graph_emb: [Batch_Size, Dim] (全局特征)
         node_emb, graph_emb = self.brep_encoder(batch, last_state_only=True)
         
-        # 调整维度 [Seq_Len, B, C] -> [B, Seq_Len, C] -> 去掉 token [B, N, C]
-        node_emb = node_emb[0].permute(1, 0, 2)[:, 1:, :]
+        # 2. 调整 node_emb 的维度
+        # 取出最后一层的输出 node_emb[0] 并转置
+        # [Seq_Len+1, B, C] -> [B, Seq_Len+1, C] (Seq_Len+1 是因为它包含一个全局虚拟节点)
+        node_emb = node_emb[0].permute(1, 0, 2) 
+        
+        # 去掉第一个 token (全局虚拟节点)，只保留实际的几何节点
+        # [B, N, C]
+        node_emb = node_emb[:, 1:, :]           
 
-        # 2. 提取有效节点 (Masking)
+        # 3. 提取有效节点 (Masking)
+        # padding_mask: [B, N], True 表示是 Padding, False 表示是真实节点
         padding_mask = batch["padding_mask"]
+        
+        # 获取所有真实节点的索引位置
         node_pos = torch.where(padding_mask == False)
         
-        # node_z: [Total_Valid_Nodes, Dim]
+        # Flatten 操作：将 Batch 中所有图的有效节点特征提取出来拼接在一起
+        # node_z Shape: [Total_Valid_Nodes, C]  (Total_Valid_Nodes = sum of all nodes in batch)
         node_z = node_emb[node_pos]
 
-        # 3. 对齐 Global Graph Feature
+        # 4. 对齐全局图特征
+        # 计算每个图有多少个真实节点
         padding_mask_ = ~padding_mask
-        # 获取每个图的真实节点数量 [Batch_Size]
-        num_nodes_per_graph = torch.sum(padding_mask_.long(), dim=-1)
+        num_nodes_per_graph = torch.sum(padding_mask_.long(), dim=-1) # [B]
         
-        # 扩展 graph_z 以对齐 node_z
+        # 将图特征复制扩展，使其与每个对应的节点对齐
+        # 例如图1有5个节点，图2有3个节点，graph_emb[0]重复5次，graph_emb[1]重复3次
+        # graph_z Shape: [Total_Valid_Nodes, C]
         graph_z = graph_emb.repeat_interleave(num_nodes_per_graph, dim=0).to(graph_emb.device)
 
-        # 4. Attention Feature Fusion (这是你要求的关键点)
-        # z: [Total_Valid_Nodes, Dim] —— 包含融合了图信息的节点特征
+        # 5. 特征融合 (Node + Graph)
+        # z Shape: [Total_Valid_Nodes, C]
         z = self.attention([node_z, graph_z])
-
-        # 5. 根据任务分流
-        if self.task_type == 'segmentation':
-            # 直接对每个节点分类
-            return self.classifier(z)
         
-        else: # classification
-            # 传入 batch_num_nodes 进行池化，然后分类
-            # 注意：num_nodes_per_graph 就是每个图的有效节点数
-            return self.classifier(z, num_nodes_per_graph)
-
-    def _get_graph_labels(self, batch):
-        """分类任务专用：从 batch 中提取图级别的标签"""
-        # 原始 label_feature 是 [Total_Valid_Nodes]
-        flat_labels = batch["label_feature"].long()
+        # 6. 分类
+        # node_seg Shape: [Total_Valid_Nodes, Num_Classes]
+        node_seg = self.classifier(z)
         
-        # 我们只需要每个图取一个标签即可 (因为之前脚本给全图节点打了相同标签)
-        batch_num_nodes = batch["graph"].batch_num_nodes() # DGL 提供的每个图节点数列表
-        
-        # 计算切分点，取每个图的第一个节点的标签
-        cum_nodes = torch.cumsum(batch_num_nodes, dim=0)
-        start_indices = torch.cat([torch.tensor([0], device=self.device), cum_nodes[:-1]])
-        
-        return flat_labels[start_indices]
+        return node_seg
 
     def training_step(self, batch, batch_idx):
-        logits = self(batch)
-
-        if self.task_type == 'segmentation':
-            # 分割 Loss
-            labels = batch["label_feature"].long()
-            labels_onehot = F.one_hot(labels, self.num_classes)
-            loss = WeightedCrossEntropyLoss(labels_onehot, logits)
-        else:
-            # 分类 Loss (Standard CrossEntropy)
-            labels = self._get_graph_labels(batch)
-            loss = self.cls_loss_fn(logits, labels)
-
+        """
+        单步训练
+        """
+        # 前向传播，获取预测结果
+        node_seg = self(batch)
+        
+        # 获取标签
+        # labels Shape: [Total_Valid_Nodes]
+        labels = batch["label_feature"].long()
+        
+        # 转 One-hot 编码
+        labels_onehot = F.one_hot(labels, self.num_classes)
+        
+        # 计算自定义的加权交叉熵损失
+        loss = WeightedCrossEntropyLoss(labels_onehot, node_seg)
+        
+        # 记录日志
         self.log("train_loss", loss, on_step=False, on_epoch=True, batch_size=self.batch_size)
         return loss
 
     def training_epoch_end(self, outputs):
+        """
+        训练 epoch 结束时的操作
+        """
+        # 记录当前学习率
         current_lr = self.optimizers().param_groups[0]["lr"]
         self.log("current_lr", current_lr, on_step=False, on_epoch=True, batch_size=self.batch_size)
 
     def validation_step(self, batch, batch_idx):
-        logits = self(batch)
-
-        if self.task_type == 'segmentation':
-            labels = batch["label_feature"].long()
-            labels_onehot = F.one_hot(labels, self.num_classes)
-            loss = WeightedCrossEntropyLoss(labels_onehot, logits)
-            
-            preds = torch.argmax(logits, dim=-1).detach().cpu().numpy()
-            labels_np = labels.detach().cpu().numpy()
-        else:
-            labels = self._get_graph_labels(batch)
-            loss = self.cls_loss_fn(logits, labels)
-            
-            preds = torch.argmax(logits, dim=-1).detach().cpu().numpy()
-            labels_np = labels.detach().cpu().numpy()
-
+        """
+        单步验证
+        """
+        node_seg = self(batch)
+        labels = batch["label_feature"].long()
+        labels_onehot = F.one_hot(labels, self.num_classes)
+        
+        loss = WeightedCrossEntropyLoss(labels_onehot, node_seg)
         self.log("eval_loss", loss, on_step=False, on_epoch=True, batch_size=self.batch_size)
+
+        # 保存预测结果以便计算 Epoch 级别的指标
+        preds = torch.argmax(node_seg, dim=-1).detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
         self.pred.extend(preds)
         self.label.extend(labels_np)
         return loss
 
     def validation_epoch_end(self, outputs):
+        """
+        验证 epoch 结束，计算准确率
+        """
         preds_np = np.array(self.pred)
         labels_np = np.array(self.label)
+        
+        # 清空缓存
         self.pred = []
         self.label = []
         
-        acc = np.mean((preds_np == labels_np).astype(np.int32))
-        
-        # 区分 Log 名称
-        metric_name = "graph_accuracy" if self.task_type == 'classification' else "per_face_accuracy"
-        self.log(metric_name, acc, batch_size=self.batch_size)
+        # 计算 Face-level Accuracy (逐面准确率)
+        per_face_comp = (preds_np == labels_np).astype(np.int32)
+        self.log("per_face_accuracy", np.mean(per_face_comp), batch_size=self.batch_size)
 
     def test_step(self, batch, batch_idx):
-        logits = self(batch)
-        preds = torch.argmax(logits, dim=-1)
+        """
+        测试步骤
+        """
+        node_seg = self(batch)
+        preds = torch.argmax(node_seg, dim=-1) # [Total_Valid_Nodes]
+        labels = batch["label_feature"].long()
         
-        if self.task_type == 'segmentation':
-            labels = batch["label_feature"].long()
-            # 保留写 txt 的逻辑 (略，同原代码)
-            self._write_segmentation_results(batch, preds) # 封装一下原代码的写文件逻辑
-        else:
-            labels = self._get_graph_labels(batch)
-
-        self.pred.extend(preds.detach().cpu().numpy())
-        self.label.extend(labels.detach().cpu().numpy())
-
-    def _write_segmentation_results(self, batch, preds):
-        # 将原来的写文件逻辑放在这里，保持代码整洁
+        # 过滤掉非法类别 (如果有)
+        known_pos = torch.where(labels < self.num_classes)
+        self.pred.extend(preds[known_pos].detach().cpu().numpy())
+        self.label.extend(labels[known_pos].detach().cpu().numpy())
+        
+        # --- 将预测结果写入 txt 文件 (与原始逻辑一致) ---
         n_graph, max_n_node = batch["padding_mask"].size()[:2]
-        node_pos = torch.where(batch["padding_mask"] == False)
+        
+        # 初始化一个全是 -1 的矩阵来存放预测结果
+        # [Batch, Max_Nodes]
         face_feature = -1 * torch.ones([n_graph, max_n_node], device=self.device, dtype=torch.long)
+        
+        # 将预测值填回对应位置 (Mask 为 False 的位置是有效节点)
+        node_pos = torch.where(batch["padding_mask"] == False)
         face_feature[node_pos] = preds[:]
+        
         out_face_feature = face_feature.detach().cpu().numpy()
         
         output_path = pathlib.Path("results/test")
         output_path.mkdir(parents=True, exist_ok=True)
         
+        # 逐图写入文件
         for i in range(n_graph):
+            # 计算该图的实际节点数 (通过统计非 -1 的数量)
             end_index = max_n_node - np.sum((out_face_feature[i][:] == -1).astype(np.int32))
             pred_feature = out_face_feature[i][:end_index + 1]
+            
             file_name = "feature_" + str(batch["id"][i].long().detach().cpu().numpy()) + ".txt"
             file_path = output_path / file_name
+            
             with open(file_path, "a") as f:
                 for j in range(end_index):
                     f.write(str(pred_feature[j]) + "\n")
 
     def test_epoch_end(self, outputs):
+        """
+        测试结束，计算详细指标 (Acc, Per-Class Acc, IoU)
+        并打印到控制台
+        """
         preds_np = np.array(self.pred)
         labels_np = np.array(self.label)
         self.pred = []
         self.label = []
 
-        acc = np.mean((preds_np == labels_np).astype(np.int32))
-        metric_name = "graph_accuracy" if self.task_type == 'classification' else "per_face_accuracy"
+        # 1. 总体准确率 (Per-Face Accuracy)
+        per_face_comp = (preds_np == labels_np).astype(np.int32)
+        acc = np.mean(per_face_comp)
+        self.log("per_face_accuracy", acc, batch_size=self.batch_size)
         
-        self.log(metric_name, acc, batch_size=self.batch_size)
-        print(f"{metric_name}: {acc}")
+        # 打印总体准确率
+        print("-" * 30)
+        print(f"Overall Per-Face Accuracy: {acc:.4f}")
+        print("-" * 30)
 
-        # Per-class accuracy
+        # 2. 逐类准确率 & IoU 计算
         per_class_acc = []
+        per_class_iou = []
+        
+        print(f"{'Class ID':<10} | {'Accuracy':<10} | {'IoU':<10}")
+        print("-" * 35)
+
         for i in range(self.num_classes):
+            # --- 计算类 i 的 Accuracy ---
             class_pos = np.where(labels_np == i)
             if len(class_pos[0]) > 0:
-                acc_i = np.mean(preds_np[class_pos] == labels_np[class_pos])
+                class_i_preds = preds_np[class_pos]
+                class_i_label = labels_np[class_pos]
+                acc_i = np.mean(class_i_preds == class_i_label)
                 per_class_acc.append(acc_i)
-        
-        self.log("per_class_accuracy", np.mean(per_class_acc), batch_size=self.batch_size)
-        print(f"Mean Per-Class Accuracy: {np.mean(per_class_acc)}")
+            else:
+                acc_i = 0.0 # 或者设置为 None，视情况而定
+            
+            # --- 计算类 i 的 IoU ---
+            label_pos = np.where(labels_np == i)
+            pred_pos = np.where(preds_np == i)
+            
+            iou_i = 0.0
+            if len(pred_pos[0]) > 0 or len(label_pos[0]) > 0: # 只要预测或标签里有这个类就算
+                Intersection = (preds_np[label_pos] == labels_np[label_pos]).astype(np.int32)
+                Union = (preds_np[label_pos] != labels_np[label_pos]).astype(np.int32)
+                Union_ = (preds_np[pred_pos] != labels_np[pred_pos]).astype(np.int32)
+                
+                denom = np.sum(Union) + np.sum(Intersection) + np.sum(Union_)
+                if denom > 0:
+                    iou_i = np.sum(Intersection) / denom
+                per_class_iou.append(iou_i)
+            
+            # 打印每一类的详细信息 (如果该类存在于标签中)
+            if len(class_pos[0]) > 0:
+                print(f"{i:<10} | {acc_i:.4f}     | {iou_i:.4f}")
+
+        # 计算平均值
+        mean_class_acc = np.mean(per_class_acc)
+        mean_iou = np.mean(per_class_iou)
+
+        self.log("per_class_accuracy", mean_class_acc, batch_size=self.batch_size)
+        self.log("IoU", mean_iou, batch_size=self.batch_size)
+
+        # 打印平均值
+        print("-" * 35)
+        print(f"Mean Per-Class Accuracy:   {mean_class_acc:.4f}")
+        print(f"Mean IoU:                  {mean_iou:.4f}")
+        print("-" * 35)
 
     def configure_optimizers(self):
+        """
+        配置优化器和学习率调度器
+        """
         optimizer = torch.optim.AdamW(self.parameters(), lr=0.001, betas=(0.9, 0.999))
+        
+        # 学习率衰减策略: 当 eval_loss 不再下降时减少 LR
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='min', factor=0.5, patience=10, 
             threshold=0.001, threshold_mode='rel', min_lr=0.000001, 
             cooldown=2, verbose=False
         )
-        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "epoch", "frequency": 1, "monitor": "eval_loss"}}
+        
+        return {
+            "optimizer": optimizer, 
+            "lr_scheduler": {
+                "scheduler": scheduler, 
+                "interval": "epoch", 
+                "frequency": 1, 
+                "monitor": "eval_loss"
+            }
+        }
 
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx, optimizer_closure, on_tpu=False, using_lbfgs=False, **kwargs):
+        """
+        自定义优化步，加入了 Warm-up 策略
+        """
+        # 更新参数
         optimizer.step(closure=optimizer_closure)
+        
+        # 如果在前 5000 步内，执行线性 Warm-up
         if self.trainer.global_step < 5000:
             lr_scale = min(1.0, float(self.trainer.global_step + 1) / 5000.0)
             for pg in optimizer.param_groups:

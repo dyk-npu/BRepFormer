@@ -190,15 +190,6 @@ class BrepEncoder(nn.Module):
             token_embeddings: Optional[torch.Tensor] = None,
             attn_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        
-        # [修改] 增强的异常检测
-        for key in ["node_data", "edge_data"]:
-            if torch.isnan(batch_data[key]).any() or torch.isinf(batch_data[key]).any():
-                print(f"!!! 警告: 输入 {key} 包含 NaN 或 Inf !!!")
-                print("出错的 Graph ID:", batch_data["id"])
-                # 强行修复
-                batch_data[key] = torch.nan_to_num(batch_data[key], nan=0.0, posinf=1.0, neginf=-1.0)
-
         padding_mask = batch_data["padding_mask"]
         n_graph, n_node = padding_mask.size()[:2]
 
@@ -258,7 +249,7 @@ class BrepEncoder(nn.Module):
                 inner_states.append(x)
 
         x = x.transpose(0, 1) # T x B x C
-        x = self.tanh(x)
+
         graph_rep = x[0, :, :] # Global node
 
         if last_state_only:
