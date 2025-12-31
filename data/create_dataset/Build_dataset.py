@@ -18,7 +18,6 @@ from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform, BRepBuilderAPI_Mak
 from OCC.Core.BRepFill import BRepFill_Filling
 from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Edge, topods_Edge, topods_Vertex, topods
 
-import createdata.fix_index as fix_index
 
 # 读取STP文件
 def read_stp(file_path):
