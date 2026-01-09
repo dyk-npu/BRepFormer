@@ -5,8 +5,8 @@ import json
 from tqdm import tqdm
 
 # 文件夹路径
-bin_dir = '../../BrepMFR-main/dataset/MFInstSeg/bin/'
-labels_dir = '../../BrepMFR-main/dataset/MFInstSeg/label/'
+bin_dir = '../../BRepFormer/dataset/MFInstSeg/bin/'
+labels_dir = '../../BRepFormer/dataset/MFInstSeg/label/'
 
 file_names = os.listdir(bin_dir)
 
