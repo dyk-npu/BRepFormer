@@ -23,7 +23,7 @@ conda activate brepformer
 
 
 ## Data Preprocessing
-Refer to our [data processing guide](ProcessData/README.md) to convert your solid model data (in STEP format) into the `.bin` format that is understood by BRepFormer.
+Refer to our [data processing guide](ProcessData/) to convert your solid model data (in STEP format) into the `.bin` format that is understood by BRepFormer.
 
 ## Training
 
