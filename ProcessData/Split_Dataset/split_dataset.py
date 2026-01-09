@@ -12,12 +12,12 @@ np.random.seed(SEED)
 # =========================
 # 配置路径
 # =========================
-folder_path = r"/mnt/sdb/daiyongkang/Work/dyk/CADDataSet/SolidLetters/bin_topology"
+folder_path = r"/mnt/sdb/daiyongkang/Work/dyk/CADDataSet/MFInstSeg/bin_topology"
 
 # 输出路径
-output_train = r"/mnt/sdb/daiyongkang/Work/dyk/CADDataSet/SolidLetters/train.txt"
-output_val = r"/mnt/sdb/daiyongkang/Work/dyk/CADDataSet/SolidLetters/val.txt"
-output_test = r"/mnt/sdb/daiyongkang/Work/dyk/CADDataSet/SolidLetters/test.txt"
+output_train = r"/mnt/sdb/daiyongkang/Work/dyk/CADDataSet/MFInstSeg/train.txt"
+output_val = r"/mnt/sdb/daiyongkang/Work/dyk/CADDataSet/MFInstSeg/val.txt"
+output_test = r"/mnt/sdb/daiyongkang/Work/dyk/CADDataSet/MFInstSeg/test.txt"
 
 # =========================
 # 获取所有 .pkl 文件
@@ -31,7 +31,7 @@ print(f"共检测到 {len(files)} 个文件。")
 # =========================
 random.shuffle(files)
 
-train_ratio, val_ratio, test_ratio = 0.8, 0.10, 0.10
+train_ratio, val_ratio, test_ratio = 0.7, 0.15, 0.15
 total_files = len(files)
 train_size = int(total_files * train_ratio)
 val_size = int(total_files * val_ratio)
