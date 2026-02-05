@@ -14,6 +14,29 @@ Recognizing geometric features on B-rep models is a cornerstone technique for mu
 The upper part of the figure shows the details of geometric UV domain sampling, while the lower part shows the details of geometric attribute sampling.
 
 
+## Dataset
+
+We propose a new dataset named **Complex B-rep Feature Dataset (CBF Dataset)** to support geometric feature recognition on complex CAD models.
+
+The dataset is publicly available at:
+
+👉 https://huggingface.co/datasets/kang202/CBFDataset
+
+### Overview
+- **Number of samples**: 20,000 B-rep models
+- **Geometry format**: STEP (.step)
+- **Annotations**: JSON files with geometric feature labels
+- **Granularity**: One-to-one correspondence between each STEP file and its JSON annotation
+- **Domain**: Complex industrial CAD models beyond traditional machining features
+
+Compared with existing datasets that mainly focus on Machining Feature Recognition (MFR), the CBF Dataset covers more complex B-rep geometries and topological structures, making it better aligned with real-world industrial applications.
+
+### Data Organization
+Each sample consists of:
+- a STEP file describing the B-rep geometry
+- a JSON file containing the corresponding feature annotations
+
+
 ## Environment setup
 
 ```
@@ -46,6 +69,7 @@ tensorboard --logdir results/<experiment_name>
 ```
 python train.py test --dataset_path /path/to/dataset  --checkpoint /path/to/checkpoint
 ```
+
 
 
 
