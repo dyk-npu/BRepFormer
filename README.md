@@ -36,6 +36,12 @@ Each sample consists of:
 - a STEP file describing the B-rep geometry
 - a JSON file containing the corresponding feature annotations
 
+### Pretrained Weights
+
+We also release pretrained weights trained on the dataset.
+
+👉 https://huggingface.co/kang202/brepformer-weights
+
 
 ## Environment setup
 
